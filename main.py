@@ -22,7 +22,7 @@ class MeroScraper:
     SCRAPING_DELAY_MAX_TIME = 60  # seconds
     SCRAPING_DELAY_MIN_TIME = 10
     _FLARE_SOLVRR_PROXY_URI: str = (
-        "http://0.0.0.0:8191/v1"  # flaresolverr for proxying requests, helps bypass bot detection
+        "http://0.0.0.0:8192/v1"  # flaresolverr for proxying requests, helps bypass bot detection
     )
     _SCRAPEE_URI: str = "https://merolagani.com/Floorsheet.aspx"
     _request_form_data = {
@@ -133,11 +133,11 @@ class MeroScraper:
             "url": self._SCRAPEE_URI,
             "maxTimeout": 60000,
         }
-        response = requests.post(
-            self._FLARE_SOLVRR_PROXY_URI, headers=headers, json=data
-        )
-        result = response.json()
-        self._scrape_hidden_fields(result["solution"]["response"])
+        response = requests.get(self._SCRAPEE_URI, headers=headers, timeout=60)
+        print(response)
+        if response.status_code != 200:
+            raise Exception()
+        self._scrape_hidden_fields(response.text)
 
     def subsequent_request(
         self,
@@ -161,21 +161,24 @@ class MeroScraper:
         #     )
 
         post_data = urllib.parse.urlencode(self._request_form_data)
-
         headers = {
-            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/114.0.5735.199 Safari/537.36",
+            "Content-Type": "application/x-www-form-urlencoded",
         }
-        data = {
-            "cmd": "request.post",
-            "url": self._SCRAPEE_URI,
-            "maxTimeout": 60000,
-            "postData": post_data,
-        }
+
         response = requests.post(
-            self._FLARE_SOLVRR_PROXY_URI, headers=headers, json=data
+            self._SCRAPEE_URI,
+            headers=headers,
+            data=self._request_form_data,  # Directly passing dict
+            timeout=60,
         )
-        result = response.json()
-        html = result["solution"]["response"]
+
+        if response.status_code != 200:
+            raise Exception()
+
+        html = response.text
 
         if not self._verify_date_exists(html=html):
             print(f"Skipping date {date} as date is unavailable.")
