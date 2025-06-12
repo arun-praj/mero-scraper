@@ -19,8 +19,8 @@ from datetime import datetime
 class MeroScraper:
 
     CURR_REQ_LAST_PG_NO: int = 0
-    SCRAPING_DELAY_MAX_TIME = 1  # seconds
-    SCRAPING_DELAY_MIN_TIME = 1
+    SCRAPING_DELAY_MAX_TIME = 10  # seconds
+    SCRAPING_DELAY_MIN_TIME = 60 * 5
     _FLARE_SOLVRR_PROXY_URI: str = (
         "http://0.0.0.0:8191/v1"  # flaresolverr for proxying requests, helps bypass bot detection
     )
@@ -163,7 +163,7 @@ class MeroScraper:
             "ctl00$ContentPlaceHolder1$txtSellerBrokerCodeFilter"
         ] = seller
 
-        if date != "":
+        if date != "" or symbol != "" or buyer != "" or seller != "":
             self._request_form_data["__EVENTTARGET"] = (
                 "ctl00$ContentPlaceHolder1$lbtnSearchFloorsheet"
             )
@@ -232,8 +232,8 @@ if __name__ == "__main__":
                 mero_scraper.SCRAPING_DELAY_MAX_TIME,
             )
             # Long break after every 10 request
-            # if i % 10 == 0:
-            #     delay = 300
+            if i % 10 == 0:
+                delay = 300
             print(
                 f"Scraping floorsheet page no. {i} of {LAST_PAGE} with random {delay}s delay .... "
             )
