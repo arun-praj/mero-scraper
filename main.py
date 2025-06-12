@@ -19,8 +19,8 @@ from datetime import datetime
 class MeroScraper:
 
     CURR_REQ_LAST_PG_NO: int = 0
-    SCRAPING_DELAY_MAX_TIME = 10  # seconds
-    SCRAPING_DELAY_MIN_TIME = 60 * 5
+    SCRAPING_DELAY_MAX_TIME = 300  # seconds
+    SCRAPING_DELAY_MIN_TIME = 10
     _FLARE_SOLVRR_PROXY_URI: str = (
         "http://0.0.0.0:8191/v1"  # flaresolverr for proxying requests, helps bypass bot detection
     )
