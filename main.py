@@ -13,13 +13,13 @@ import pandas as pd
 
 from bs4 import BeautifulSoup
 from io import StringIO
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 class MeroScraper:
 
     CURR_REQ_LAST_PG_NO: int = 0
-    SCRAPING_DELAY_MAX_TIME = 300  # seconds
+    SCRAPING_DELAY_MAX_TIME = 60  # seconds
     SCRAPING_DELAY_MIN_TIME = 10
     _FLARE_SOLVRR_PROXY_URI: str = (
         "http://0.0.0.0:8191/v1"  # flaresolverr for proxying requests, helps bypass bot detection
@@ -48,6 +48,9 @@ class MeroScraper:
         "ctl00$ContentPlaceHolder1$PagerControl2$hdnCurrentPage": "0",
     }
 
+    def get_curr_req_last_pg_no(self):
+        return self.CURR_REQ_LAST_PG_NO
+
     def _scrape_hidden_fields(self, html: str):
 
         VIEW_STATE = "__VIEWSTATE"
@@ -68,6 +71,13 @@ class MeroScraper:
         self._request_form_data["__VIEWSTATE"] = view_state
         self._request_form_data["__EVENTVALIDATION"] = event_validation
 
+    def _verify_date_exists(self, html: str) -> bool:
+        soup = BeautifulSoup(html, "html.parser")
+        if soup.find(name="div", attrs={"id": "ctl00_ContentPlaceHolder1_divNoData"}):
+            self.CURR_REQ_LAST_PG_NO = 0
+            return False
+        return True
+
     def _scrape_last_page_number(self, html) -> int:
         soup = BeautifulSoup(html, "html.parser")
 
@@ -85,34 +95,29 @@ class MeroScraper:
     def _scrape_table_data_to_db(
         self,
         html: str,
-        date: str = "",
-        symbol: str = "",
-        buyer: str = "",
-        seller: str = "",
+        date="",
         db_write_mode="",
     ):
-        # soup = BeautifulSoup(html, "html.parser")
-        # table = soup.find("table")
-        # headers = [th.span.get_text(strip=True) for th in table.find_all("th")]
+
+        col_mapping = {
+            "#": "id",
+            "Transact. No.": "contract_id",
+            "Symbol": "symbol",
+            "Buyer": "buyer_id",
+            "Seller": "seller_id",
+            "Quantity": "quantity",
+            "Rate": "rate",
+            "Amount": "amount",
+            "date": date,
+        }
         today = datetime.today()
         dfs = pd.read_html(StringIO(html))[0]
+
+        dfs = dfs.rename(columns=col_mapping)
+        dfs["date"] = date
         conn = sqlite3.connect("floorsheet.db")  # creates file if doesn't exist
-        str_build = []
 
-        if date:
-            str_build.append(date)
-        if symbol:
-            str_build.append(symbol)
-
-        if buyer:
-            str_build.append(buyer)
-        if seller:
-            str_build.append(seller)
-
-        table_name = (
-            "-".join(str_build) if len(str_build) > 0 else today.strftime("%m/%d/%Y")
-        )
-        safe_table_name = re.sub(r"\W+", "_", table_name)
+        safe_table_name = re.sub(r"\W+", "_", str(today.strftime("%m/%d/%Y")))
         dfs.to_sql(
             f"floorsheet_{safe_table_name}", conn, if_exists=db_write_mode, index=False
         )
@@ -138,9 +143,6 @@ class MeroScraper:
         self,
         date: str = "",
         page: int = 1,
-        symbol: str = "",
-        buyer: str = "",
-        seller: str = "",
         persist=True,
         db_write_mode="append",
     ) -> str:
@@ -152,32 +154,16 @@ class MeroScraper:
         self._request_form_data["ctl00$ContentPlaceHolder1$txtFloorsheetDateFilter"] = (
             date
         )
-        self._request_form_data[
-            "ctl00$ContentPlaceHolder1$ASCompanyFilter$txtAutoSuggest"
-        ] = symbol
 
-        self._request_form_data[
-            "ctl00$ContentPlaceHolder1$txtBuyerBrokerCodeFilter"
-        ] = buyer
-        self._request_form_data[
-            "ctl00$ContentPlaceHolder1$txtSellerBrokerCodeFilter"
-        ] = seller
-
-        if date != "" or symbol != "" or buyer != "" or seller != "":
-            self._request_form_data["__EVENTTARGET"] = (
-                "ctl00$ContentPlaceHolder1$lbtnSearchFloorsheet"
-            )
+        # if date != "":
+        #     self._request_form_data["__EVENTTARGET"] = (
+        #         "ctl00$ContentPlaceHolder1$lbtnSearchFloorsheet"
+        #     )
 
         post_data = urllib.parse.urlencode(self._request_form_data)
 
-        USER_AGENTS = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15",
-            "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:92.0) Gecko/20100101 Firefox/92.0",
-        ]
         headers = {
             "Content-Type": "application/json",
-            "User-Agent": random.choice(USER_AGENTS),
         }
         data = {
             "cmd": "request.post",
@@ -190,65 +176,90 @@ class MeroScraper:
         )
         result = response.json()
         html = result["solution"]["response"]
+
+        if not self._verify_date_exists(html=html):
+            print(f"Skipping date {date} as date is unavailable.")
+            return "DO_NOT_EXIST"
+
+        self._scrape_last_page_number(html)
         self._scrape_hidden_fields(html)
 
         if persist:
             self._scrape_table_data_to_db(
                 html=html,
                 date=date,
-                buyer=buyer,
-                seller=seller,
-                symbol=symbol,
                 db_write_mode=db_write_mode,
             )
-        else:
-            self._scrape_last_page_number(html)
 
 
 if __name__ == "__main__":
 
     print(
-        "\n\nNone of the fields are mandatory. If date is not specified then by default today's date is used.**\n\n"
+        "\n\n** If the start date and end date are not specified then default start date is 08/20/2014 and end date is today's date **\n\n"
     )
-    date = input("Enter the date to scrape the floorsheet (MM/DD/YYYY) : ")
-    symbol = input("Enter the Stock symbol: ")
-    buyer = input("Enter the buyer code: ")
-    seller = input("Enter the seller code: ")
+    start_date_str = (
+        input("(Optional) Enter the start date (MM/DD/YYYY) :  ") or "08/20/2014"
+    )
+    end_date_str = input("(Optional) Enter the end date (MM/DD/YYYY) : ") or str()
 
-    print("\n\nScraping Started... \n")
+    start_date = datetime.strptime(start_date_str, "%m/%d/%Y").date()
+    end_date = datetime.today().date()
+
+    if end_date_str:
+        end_date = datetime.strptime(end_date_str, "%m/%d/%Y").date()
+
+    current_date = start_date
+
+    print(f"\n\nInitializing...\n")
 
     mero_scraper = MeroScraper()
     mero_scraper.initial_request()
-    mero_scraper.subsequent_request(date=date, page=1, persist=False)
+    mero_scraper.subsequent_request(date=start_date_str, page=1, persist=False)
+
+    print(f"\n\nScraping Started from {start_date} to {end_date}... \n\n")
 
     START = 1
-    LAST_PAGE = mero_scraper.CURR_REQ_LAST_PG_NO
+    LAST_PAGE = mero_scraper.get_curr_req_last_pg_no()
 
     if mero_scraper.CURR_REQ_LAST_PG_NO > 0:
-        db_write_mode = "replace"
-        for i in range(START, LAST_PAGE + 1):
-            delay = random.randint(
-                mero_scraper.SCRAPING_DELAY_MIN_TIME,
-                mero_scraper.SCRAPING_DELAY_MAX_TIME,
-            )
-            # Long break after every 10 request
-            if i % 10 == 0:
-                delay = 300
-            print(
-                f"Scraping floorsheet page no. {i} of {LAST_PAGE} with random {delay}s delay .... "
-            )
+        db_write_mode = "append"
 
-            # long break after 10 requests
+        while current_date < end_date:
 
-            time.sleep(delay)
-            mero_scraper.subsequent_request(
-                date=date,
-                page=i,
-                symbol=symbol,
-                seller=seller,
-                buyer=buyer,
+            # This request is to get last page number
+            exist_message = mero_scraper.subsequent_request(
+                date=current_date.strftime("%m/%d/%Y"),
+                page=1,
                 db_write_mode=db_write_mode,
+                persist=False,
             )
-            db_write_mode = "append"
-            print(f"Successfully saved page no. {i} into database.\n\n")
+            if exist_message == "DO_NOT_EXIST":
+                current_date += timedelta(days=1)
+                continue
+
+            LAST_PAGE = mero_scraper.get_curr_req_last_pg_no()
+
+            for page_number in range(START, LAST_PAGE + 1):
+
+                print(f"[{current_date}] Scraping page {page_number}/{LAST_PAGE} .... ")
+                # time.sleep(delay)
+
+                exist_message = mero_scraper.subsequent_request(
+                    date=current_date.strftime("%m/%d/%Y"),
+                    page=page_number,
+                    db_write_mode=db_write_mode,
+                )
+
+                db_write_mode = "append"
+                print(f"Successfully saved page no. {page_number} into database.\n\n")
+
+            with open("saved_dates.log", "a") as f:
+                f.write(
+                    f"({current_date}): {LAST_PAGE}/{LAST_PAGE} : Save successful\n"
+                )
+            current_date += timedelta(days=1)
+
         print("\n\n** Completed **\n\n")
+
+# 09/01/2014
+# 09/05/2014
