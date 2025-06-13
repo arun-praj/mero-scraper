@@ -14,6 +14,7 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from io import StringIO
 from datetime import datetime, timedelta
+from urllib3.exceptions import ReadTimeoutError
 
 
 class MeroScraper:
@@ -118,9 +119,7 @@ class MeroScraper:
         conn = sqlite3.connect("floorsheet.db")  # creates file if doesn't exist
 
         safe_table_name = re.sub(r"\W+", "_", str(today.strftime("%m/%d/%Y")))
-        dfs.to_sql(
-            f"floorsheet_{safe_table_name}", conn, if_exists=db_write_mode, index=False
-        )
+        dfs.to_sql(f"floorsheet", conn, if_exists="append", index=False)
 
     def initial_request(self) -> str:
         """
@@ -182,6 +181,8 @@ class MeroScraper:
 
         if not self._verify_date_exists(html=html):
             print(f"Skipping date {date} as date is unavailable.")
+            with open("saved_dates.log", "a") as f:
+                f.write(f"{date} Empty data")
             return "DO_NOT_EXIST"
 
         self._scrape_last_page_number(html)
@@ -225,17 +226,25 @@ if __name__ == "__main__":
     LAST_PAGE = mero_scraper.get_curr_req_last_pg_no()
 
     if mero_scraper.CURR_REQ_LAST_PG_NO > 0:
-        db_write_mode = "append"
-
         while current_date < end_date:
-
+            fetching_error = False
             # This request is to get last page number
-            exist_message = mero_scraper.subsequent_request(
-                date=current_date.strftime("%m/%d/%Y"),
-                page=1,
-                db_write_mode=db_write_mode,
-                persist=False,
-            )
+            try:
+
+                exist_message = mero_scraper.subsequent_request(
+                    date=current_date.strftime("%m/%d/%Y"),
+                    page=1,
+                    persist=False,
+                )
+
+            except:
+                fetching_error = True
+                print(
+                    "Connection to server error. Waiting for 2min before trying again."
+                )
+                time.sleep(120)
+                continue
+
             if exist_message == "DO_NOT_EXIST":
                 current_date += timedelta(days=1)
                 continue
@@ -247,20 +256,33 @@ if __name__ == "__main__":
                 print(f"[{current_date}] Scraping page {page_number}/{LAST_PAGE} .... ")
                 # time.sleep(delay)
 
-                exist_message = mero_scraper.subsequent_request(
-                    date=current_date.strftime("%m/%d/%Y"),
-                    page=page_number,
-                    db_write_mode=db_write_mode,
-                )
+                try:
+                    exist_message = mero_scraper.subsequent_request(
+                        date=current_date.strftime("%m/%d/%Y"),
+                        page=page_number,
+                    )
+                except:
+                    fetching_error = True
+
+                    print(
+                        "Connection to server error. Waiting for 2min before trying again."
+                    )
+                    time.sleep(120)
+                    break
 
                 db_write_mode = "append"
-                print(f"Successfully saved page no. {page_number} into database.\n\n")
+                if not fetching_error:
+                    print(
+                        f"Successfully saved page no. {page_number} into database.\n\n"
+                    )
 
-            with open("saved_dates.log", "a") as f:
-                f.write(
-                    f"({current_date}): {LAST_PAGE}/{LAST_PAGE} : Save successful\n"
-                )
-            current_date += timedelta(days=1)
+            if not fetching_error:
+                with open("saved_dates.log", "a") as f:
+                    f.write(
+                        (current_date.strftime("%m/%d/%Y"))
+                        + f": {LAST_PAGE}/{LAST_PAGE} : Save successful\n"
+                    )
+                current_date += timedelta(days=1)
 
         print("\n\n** Completed **\n\n")
 
