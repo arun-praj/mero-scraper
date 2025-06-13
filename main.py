@@ -225,7 +225,7 @@ if __name__ == "__main__":
                 current_page = 1
                 while current_page <= last_page:
                     print(
-                        f"[{current_date}] Scraping page {current_page}/{last_page} ....\n"
+                        f"[{current_date}] Scraping page {current_page}/{last_page} ...."
                     )
 
                     try:
@@ -233,10 +233,10 @@ if __name__ == "__main__":
                             date=current_date.strftime("%m/%d/%Y"),
                             page=current_page,
                         )
-                        current_page += 1
                         print(
                             f"Succesfully saved {current_page}/{last_page} page into database.\n\n"
                         )
+                        current_page += 1
 
                     except Exception as e:
                         logging.error(f"Exception: {str(e)}. Trying again in 120s")
