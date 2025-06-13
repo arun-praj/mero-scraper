@@ -1,28 +1,31 @@
+# @@AUTHOR - Arun Praj
+# @@DESC - Scraps merolagani's floorsheet data
+
+
 import re
 import requests
+import urllib.parse
 import time
+import random
 import sqlite3
-import logging
 
 import pandas as pd
 
+from bs4 import BeautifulSoup
 from io import StringIO
-from bs4 import BeautifulSoup as BS
 from datetime import datetime, timedelta
-
-logging.basicConfig(
-    filename="floorsheet.log",  # Specify the log file name
-    level=logging.INFO,  # Set the logging level to INFO
-    format="%(levelname)s - %(message)s",  # Define the log message format
-)
+from urllib3.exceptions import ReadTimeoutError
 
 
 class MeroScraper:
 
     CURR_REQ_LAST_PG_NO: int = 0
+    SCRAPING_DELAY_MAX_TIME = 60  # seconds
+    SCRAPING_DELAY_MIN_TIME = 10
+    _FLARE_SOLVRR_PROXY_URI: str = (
+        "http://0.0.0.0:8192/v1"  # flaresolverr for proxying requests, helps bypass bot detection
+    )
     _SCRAPEE_URI: str = "https://merolagani.com/Floorsheet.aspx"
-    DB_NAME = "floorsheet_new.db"
-
     _request_form_data = {
         "__EVENTTARGET": "",  # EVENTTARGET is only genereated when form sheet input fields are changed , remains empty if pagination is clicked
         "__EVENTARGUMENT": "",
@@ -54,7 +57,7 @@ class MeroScraper:
         VIEW_STATE = "__VIEWSTATE"
         EVENT_VALIDATION = "__EVENTVALIDATION"
 
-        soup = BS(html, "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
 
         view_state = soup.find(
             name="input", attrs={"name": VIEW_STATE, "id": VIEW_STATE}
@@ -69,8 +72,15 @@ class MeroScraper:
         self._request_form_data["__VIEWSTATE"] = view_state
         self._request_form_data["__EVENTVALIDATION"] = event_validation
 
+    def _verify_date_exists(self, html: str) -> bool:
+        soup = BeautifulSoup(html, "html.parser")
+        if soup.find(name="div", attrs={"id": "ctl00_ContentPlaceHolder1_divNoData"}):
+            self.CURR_REQ_LAST_PG_NO = 0
+            return False
+        return True
+
     def _scrape_last_page_number(self, html) -> int:
-        soup = BS(html, "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
 
         pagination_text = soup.find(
             name="span",
@@ -83,17 +93,11 @@ class MeroScraper:
         else:
             raise Exception("Error scraping Total page number from html.")
 
-    def _verify_date_exists(self, html: str) -> bool:
-        soup = BS(html, "html.parser")
-        if soup.find(name="div", attrs={"id": "ctl00_ContentPlaceHolder1_divNoData"}):
-            self.CURR_REQ_LAST_PG_NO = 0
-            return False
-        return True
-
     def _scrape_table_data_to_db(
         self,
         html: str,
         date="",
+        db_write_mode="",
     ):
 
         col_mapping = {
@@ -107,12 +111,14 @@ class MeroScraper:
             "Amount": "amount",
             "date": date,
         }
-
+        today = datetime.today()
         dfs = pd.read_html(StringIO(html))[0]
+
         dfs = dfs.rename(columns=col_mapping)
         dfs["date"] = date
+        conn = sqlite3.connect("floorsheet.db")  # creates file if doesn't exist
 
-        conn = sqlite3.connect(self.DB_NAME)  # creates file if doesn't exist
+        safe_table_name = re.sub(r"\W+", "_", str(today.strftime("%m/%d/%Y")))
         dfs.to_sql(f"floorsheet", conn, if_exists="append", index=False)
 
     def initial_request(self) -> str:
@@ -137,6 +143,7 @@ class MeroScraper:
         date: str = "",
         page: int = 1,
         persist=True,
+        db_write_mode="append",
     ) -> str:
 
         self._request_form_data[
@@ -147,6 +154,12 @@ class MeroScraper:
             date
         )
 
+        # if date != "":
+        #     self._request_form_data["__EVENTTARGET"] = (
+        #         "ctl00$ContentPlaceHolder1$lbtnSearchFloorsheet"
+        #     )
+
+        post_data = urllib.parse.urlencode(self._request_form_data)
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -167,7 +180,9 @@ class MeroScraper:
         html = response.text
 
         if not self._verify_date_exists(html=html):
-            print(f"\nSkipping date {date} as date is unavailable.\n")
+            print(f"\n Skipping date {date} as date is unavailable.\n")
+            with open("saved_dates.log", "a") as f:
+                f.write(f"{date} Empty data")
             return "DO_NOT_EXIST"
 
         self._scrape_last_page_number(html)
@@ -177,12 +192,22 @@ class MeroScraper:
             self._scrape_table_data_to_db(
                 html=html,
                 date=date,
+                db_write_mode=db_write_mode,
             )
-        return "EXIST"
+
+    def count_down(self, time: int = 60):
+        mins, secs = divmod(time, 60)
+        timer = "{:02d}:{:02d}".format(mins, secs)
+        print(timer, end="\r")  # Overwrite the line each second
+        time.sleep(1)
+        t -= 1
 
 
 if __name__ == "__main__":
 
+    print(
+        "\n\n** If the start date and end date are not specified then default start date is 08/20/2014 and end date is today's date **\n\n"
+    )
     start_date_str = (
         input("(Optional) Enter the start date (MM/DD/YYYY) :  ") or "08/20/2014"
     )
@@ -196,60 +221,77 @@ if __name__ == "__main__":
 
     current_date = start_date
 
-    mero_scraper = MeroScraper()
+    print(f"\n\nInitializing...\n")
 
+    mero_scraper = MeroScraper()
     mero_scraper.initial_request()
+    mero_scraper.subsequent_request(date=start_date_str, page=1, persist=False)
+
+    print(f"\n\nScraping Started from {start_date} to {end_date}... \n\n")
 
     START = 1
+    LAST_PAGE = mero_scraper.get_curr_req_last_pg_no()
 
-    logging.info(f"Scraping Started from {start_date} to {end_date}.")
+    if mero_scraper.CURR_REQ_LAST_PG_NO > 0:
+        while current_date < end_date:
+            fetching_error = False
+            # This request is to get last page number
+            try:
 
-    while current_date < end_date:
-        try:
-            # This will set the current date's last page number
-            exist_message = mero_scraper.subsequent_request(
-                date=current_date.strftime("%m/%d/%Y"),
-                page=1,
-                persist=False,
-            )
+                exist_message = mero_scraper.subsequent_request(
+                    date=current_date.strftime("%m/%d/%Y"),
+                    page=1,
+                    persist=False,
+                )
 
-        except Exception as e:
-            logging.error(f"Exception: {str(e)}. Trying again in 120s")
-            print(f"Exception :{e}. Trying again in {120}s")
-            time.sleep(120)
+            except:
+                fetching_error = True
+                print(
+                    "Connection to server error. Waiting for 2min before trying again."
+                )
+                time.sleep(120)
+                continue
 
-        else:
+            if exist_message == "DO_NOT_EXIST":
+                current_date += timedelta(days=1)
+                continue
 
-            if exist_message == "EXIST":
-                last_page = mero_scraper.get_curr_req_last_pg_no()
-                current_page = 1
-                while current_page <= last_page:
+            LAST_PAGE = mero_scraper.get_curr_req_last_pg_no()
+
+            for page_number in range(START, LAST_PAGE + 1):
+
+                print(f"[{current_date}] Scraping page {page_number}/{LAST_PAGE} .... ")
+                # time.sleep(delay)
+
+                try:
+                    exist_message = mero_scraper.subsequent_request(
+                        date=current_date.strftime("%m/%d/%Y"),
+                        page=page_number,
+                    )
+                except:
+                    fetching_error = True
+
                     print(
-                        f"[{current_date}] Scraping page {current_page}/{last_page} ....\n"
+                        "Connection to server error. Waiting for 2min before trying again."
+                    )
+                    time.sleep(120)
+                    break
+
+                db_write_mode = "append"
+                if not fetching_error:
+                    print(
+                        f"Successfully saved page no. {page_number} into database.\n\n"
                     )
 
-                    try:
-                        mero_scraper.subsequent_request(
-                            date=current_date.strftime("%m/%d/%Y"),
-                            page=current_page,
-                        )
-                        current_page += 1
-                        print(
-                            f"Succesfully saved {current_page}/{last_page} page into database.\n\n"
-                        )
+            if not fetching_error:
+                with open("saved_dates.log", "a") as f:
+                    f.write(
+                        (current_date.strftime("%m/%d/%Y"))
+                        + f": {LAST_PAGE}/{LAST_PAGE} : Save successful\n"
+                    )
+                current_date += timedelta(days=1)
 
-                    except Exception as e:
-                        logging.error(f"Exception: {str(e)}. Trying again in 120s")
-                        print(
-                            f"Exception :{e}. Trying again in {mero_scraper.count_down(120)}s"
-                        )
-                        time.sleep(120)
-                logging.info(
-                    (current_date.strftime("%m/%d/%Y"))
-                    + f": {mero_scraper.get_curr_req_last_pg_no()}/{mero_scraper.get_curr_req_last_pg_no()} : Scraped and saved into database"
-                )
-            else:
-                logging.warning(f"{current_date}: No data available. Skipping")
+        print("\n\n** Completed **\n\n")
 
-            current_date += timedelta(days=1)
-    logging.info("SCRAPING COMPLETE")
+# 09/01/2014
+# 09/05/2014

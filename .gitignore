@@ -9,3 +9,5 @@ wheels/
 # Virtual environments
 .venv
 *.db
+*.log
+.DS_STORE
